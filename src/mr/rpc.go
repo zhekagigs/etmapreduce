@@ -14,6 +14,14 @@ import "strconv"
 // and reply for an RPC.
 //
 
+type MessageType int32
+
+const (
+	Idle       MessageType = 0
+	InProgress MessageType = 1
+	Completed  MessageType = 2
+)
+
 type ExampleArgs struct {
 	X     int
 	Hello string
@@ -24,26 +32,22 @@ type ExampleReply struct {
 	World string
 }
 
-type ETReply struct {
-	OhMy string
-}
-
-type ETArgs struct {
-	FirstArgument  string
-	SecondArgument string
-}
-
 type TaskRequest struct {
+	State MessageType
 }
 
 type TaskReply struct {
-	Filename string
+	Filename    string
+	TaskNumber  int
+	NumReducers int
 }
 
 type Task struct {
 	Filename  string
+	TaskNum   int
 	isMapped  bool
 	isReduced bool
+	State     MessageType
 }
 
 // Add your RPC definitions here.

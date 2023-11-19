@@ -8,7 +8,7 @@ import (
 	"net/rpc"
 	"os"
 	"sort"
-	"json"
+	"strconv"
 )
 
 // Map functions return a slice of KeyValue.
@@ -34,17 +34,15 @@ func ihash(key string) int {
 }
 
 // main/mrworker.go calls this function.
+// The map phase should divide the intermediate keys into buckets for nReduce reduce tasks, where nReduce is the number of reduce tasks -- the argument that main/mrcoordinator.go passes to MakeCoordinator(). Each mapper should create nReduce intermediate files for consumption by the reduce tasks.
+// The worker implementation should put the output of the X'th reduce task in the file mr-out-X.
+// A mr-out-X file should contain one line per Reduce function output. The line should be generated with the Go "%v %v" format, called with the key and value.
+// When the job is completely finished, the worker processes should exit. A simple way to implement this is to use the return value from call(): if the worker fails to contact the coordinator, it can assume that the coordinator has exited because the job is done, so the worker can terminate too. Depending on your design, you might also find it helpful to have a "please exit" pseudo-task that the coordinator can give to workers.
 func Worker(mapf func(string, string) []KeyValue, reducef func(string, []string) string) {
 
-	log.Println("Worker:: worker called")
-	filename := CallForMapTask()
-
-	// Your worker implementation here.
-	// uncomment to send the Example RPC to the coordinator.
-	intermediate := collectIntermediate(mapf, filename)
-	
-	interName := "map-inter-" + filename
-
+	log.Println("Worker:: worker started")
+	replied := CallForMapTask()
+	// Optional json encoding for temp files
 	// enc := json.NewEncoder(intermediate)
 	// for _, kv := range intermediate {
 	//   err := enc.Encode(&kv)
@@ -53,34 +51,57 @@ func Worker(mapf func(string, string) []KeyValue, reducef func(string, []string)
 	// 	panic("Can't encode temp file, worker paniced")
 	//   }
 	// }
-
-	interFile, _ := os.Create(interName)
-	
-	for _, kv := range intermediate {
-		fmt.Fprintf(interFile, "%v %v\n", kv.Key, kv.Value)
-
-	}
-
-
-	//
-	// a big difference from real MapReduce is that all the
-	// intermediate data is in one place, intermediate[],
-	// rather than being partitioned into NxM buckets.
-	//
-	sort.Sort(ByKey(intermediate))
-
-	oname := "mr-out-"+filename
-	ofile, _ := os.Create(oname)
-
-	produceReducedOutput(intermediate, reducef, ofile)
-
-	ofile.Close()
+	//use os to write temp file
+	intermediate := doMap(mapf, replied)
+	CallMapTaskDone(intermediate)
+	// doReduce(replied, intermediate, reducef)
 
 }
 
-func collectIntermediate(mapf func(string, string) []KeyValue, filename string) []KeyValue {
+func CallMapTaskDone(intermediate string) TaskReply {
+	log.Println("Worker::callMap initialized")
+	args := TaskRequest{Completed}
+	reply := TaskReply{}
+	handlerName := "GiveMeAMapTask"
+	ok := call("Coordinator."+handlerName, &args, &reply)
+	if ok {
+		log.Printf("Worker::coordinator replied with %s\n", reply)
+	} else {
+		fmt.Println("MyCall failed!")
+	}
+
+	return reply
+}
+
+func doReduce(replied TaskReply, intermediate string, reducef func(string, []string) string) {
+	oname := "mr-out-" + strconv.Itoa(replied.TaskNumber)
+	ofile, _ := os.Create(oname)
+	// produceReducedOutput(intermediate, reducef, ofile)
+	log.Println("Worker::finished printing out file " + oname)
+	ofile.Close()
+}
+
+func doMap(mapf func(string, string) []KeyValue, replied TaskReply) string {
+
+	intermediate := collectIntermediate(mapf, replied.Filename, replied.NumReducers)
+	// sort.Sort(ByKey(intermediate))
+
+	interName := "map-inter-" + replied.Filename
+
 	
-	intermediate := []KeyValue{}
+	for key, kvpairs := range intermediate {
+		interFile, _ := os.Create(interName + strconv.Itoa(key))
+		fmt.Fprintf(interFile, "%v %v\n", kvpairs.Key, kvpairs.Value)
+	}
+	log.Println("Worker::finished printing intermeditea file " + interName)
+	interFile.Close()
+	return interName
+}
+
+func collectIntermediate(mapf func(string, string) []KeyValue, filename string, nReduce int)  map[int][]KeyValue {
+	
+	m := make(map[int][]KeyValue)
+
 	file, err := os.Open(filename)
 	if err != nil {
 		log.Fatalf("cannot open %v", filename)
@@ -90,44 +111,57 @@ func collectIntermediate(mapf func(string, string) []KeyValue, filename string) 
 		log.Fatalf("cannot read %v", filename)
 	}
 	file.Close()
-	kva := mapf(filename, string(content))
-	intermediate = append(intermediate, kva...)
+	keyValuePairs := mapf(filename, string(content))
+	for _, kv := range keyValuePairs {
+		partitionKey := ihash(kv.Key) % nReduce
 
-	return intermediate
-}
-
-func produceReducedOutput(intermediate []KeyValue, reducef func(string, []string) string, ofile *os.File) {
-	i := 0
-	for i < len(intermediate) {
-		j := i + 1
-		for j < len(intermediate) && intermediate[j].Key == intermediate[i].Key {
-			j++
+		if _, ok := m[partitionKey]; !ok {
+			m[partitionKey] = []KeyValue{kv}
+		} else {
+			m[partitionKey] = append(m[partitionKey], kv)
 		}
-		values := []string{}
-		for k := i; k < j; k++ {
-			values = append(values, intermediate[k].Value)
-		}
-		output := reducef(intermediate[i].Key, values)
-
-		fmt.Fprintf(ofile, "%v %v\n", intermediate[i].Key, output)
-
-		i = j
+		if (len(m)) > nReduce {
+			panic("Worken:: partition failed")
+		} 
 	}
+
+	return m
 }
 
-func CallForMapTask() string {
+// func produceReducedOutput(intermediateFile string, reducef func(string, []string) string, ofile *os.File) {
+// 	i := 0
+// 	file := os.Open(intermediateFile)
+
+// 	for i < len(intermediate) {
+// 		j := i + 1
+// 		for j < len(intermediate) && intermediate[j].Key == intermediate[i].Key {
+// 			j++
+// 		}
+// 		values := []string{}
+// 		for k := i; k < j; k++ {
+// 			values = append(values, intermediate[k].Value)
+// 		}
+// 		output := reducef(intermediate[i].Key, values)
+
+// 		fmt.Fprintf(ofile, "%v %v\n", intermediate[i].Key, output)
+
+// 		i = j
+// 	}
+// }
+
+func CallForMapTask() TaskReply {
 	log.Println("Worker::callMap initialized")
 	args := TaskRequest{}
 	reply := TaskReply{}
 	handlerName := "GiveMeAMapTask"
-	ok := call("Coordinator." + handlerName, &args, &reply)
+	ok := call("Coordinator."+handlerName, &args, &reply)
 	if ok {
 		log.Printf("Worker::coordinator replied with %s\n", reply)
 	} else {
 		fmt.Println("MyCall failed!")
 	}
 
-	return reply.Filename;
+	return reply
 }
 
 // example function to show how to make an RPC call to the coordinator.
@@ -179,4 +213,30 @@ func call(rpcname string, args interface{}, reply interface{}) bool {
 
 	fmt.Println(err)
 	return false
+}
+
+func SplitSlice(array []int, numberOfChunks int) [][]int {
+	if len(array) == 0 {
+		return nil
+	}
+	if numberOfChunks <= 0 {
+		return nil
+	}
+	if numberOfChunks == 1 {
+		return [][]int{array}
+	}
+	result := make([][]int, numberOfChunks)
+	// we have more splits than elements in the input array.
+	if numberOfChunks > len(array) {
+		for i := 0; i < len(array); i++ {
+			result[i] = []int{array[i]}
+		}
+		return result
+	}
+	for i := 0; i < numberOfChunks; i++ {
+		min := (i * len(array) / numberOfChunks)
+		max := ((i + 1) * len(array)) / numberOfChunks
+		result[i] = array[min:max]
+	}
+	return result
 }

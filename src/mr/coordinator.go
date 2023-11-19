@@ -35,20 +35,29 @@ func (c *Coordinator) GiveMeAMapTask(request *TaskRequest, reply *TaskReply) err
 	for _, task := range c.Tasks {
 		if !task.isMapped {
 			reply.Filename = task.Filename
+			reply.NumReducers = c.NumReduce
+			reply.TaskNumber = task.TaskNum
+			task.State = InProgress
 		}
 	}
 	return nil
 }
 
-// func (c *Coordinator) giveMeAReduceTask(request *TaskRequest, reply *TaskReply) error {
-// 	fmt.Println("Coordinator::Reduce requested")
-// 	for _, task := range c.Tasks {
-// 		if !task.isReduced {
-// 			reply.Filename = task.Filename
-// 		}
-// 	}
-// 	return nil
-// }
+
+//If no re- sponse is received from a worker in a certain amount of time, the master marks the worker as failed. Any map tasks completed by the worker are reset back to their ini- tial idle state, and therefore become eligible for schedul- ing on other workers. Similarly, any map task or reduce task in progress on a failed worker is also reset to idle and becomes eligible for rescheduling.
+func(c *Coordinator) PingWorker() error {
+	return nil
+}
+
+func (c *Coordinator) giveMeAReduceTask(request *TaskRequest, reply *TaskReply) error {
+	fmt.Println("Coordinator::Reduce requested")
+	for _, task := range c.Tasks {
+		if !task.isReduced {
+			reply.Filename = task.Filename
+		}
+	}
+	return nil
+}
 
 // an example RPC handler.
 //
@@ -84,9 +93,6 @@ func (c *Coordinator) Done() bool {
 			result = false
 		}
 	}
-	// Your code here.
-	// log.Println("Coordinator::Done called")
-
 	return result
 }
 
@@ -95,8 +101,8 @@ func (c *Coordinator) Done() bool {
 // nReduce is the number of reduce tasks to use.
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	var tasks []Task
-	for _, filename := range files {
-		tasks = append(tasks, Task{filename, false, false})
+	for i, filename := range files {
+		tasks = append(tasks, Task{filename, i, false, false, Idle})
 	}
 	c := Coordinator{
 		Tasks:          tasks,
