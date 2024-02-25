@@ -20,6 +20,8 @@ const (
 	Idle       MessageType = 0
 	InProgress MessageType = 1
 	Completed  MessageType = 2
+	Reduce     MessageType = 3
+	Map        MessageType = 4
 )
 
 type ExampleArgs struct {
@@ -33,13 +35,18 @@ type ExampleReply struct {
 }
 
 type TaskRequest struct {
-	State MessageType
+	State      MessageType
+	FileNames  []string
+	TaskNumber int
+	TaskType MessageType
 }
 
 type TaskReply struct {
 	Filename    string
 	TaskNumber  int
 	NumReducers int
+	TaskType MessageType
+
 }
 
 type Task struct {

@@ -31,7 +31,9 @@ type Coordinator struct {
 // Your code here -- RPC handlers for the worker to call.
 
 func (c *Coordinator) GiveMeAMapTask(request *TaskRequest, reply *TaskReply) error {
-	fmt.Println("Coordinator::Map requested")
+	log.Println("Coordinator::Map requested")
+
+
 	for _, task := range c.Tasks {
 		if !task.isMapped {
 			reply.Filename = task.Filename
@@ -39,6 +41,27 @@ func (c *Coordinator) GiveMeAMapTask(request *TaskRequest, reply *TaskReply) err
 			reply.TaskNumber = task.TaskNum
 			task.State = InProgress
 		}
+	}
+	return nil
+}
+
+
+func (c *Coordinator) TaskDone(request *TaskRequest, reply *TaskReply) error {
+	log.Println("Coordinator::TaskDone requested")
+	log.Println("Coordinator::received", request)
+
+	for _, task := range c.Tasks {
+		if task.TaskNum == request.TaskNumber {
+			task.State = request.State
+			log.Println("Coordinator::updated task state", task.Filename, task.State)
+		}
+
+		// if !task.isMapped {
+		// 	reply.Filename = task.Filename
+		// 	reply.NumReducers = c.NumReduce
+		// 	reply.TaskNumber = task.TaskNum
+		// 	task.State = InProgress
+		// }
 	}
 	return nil
 }
