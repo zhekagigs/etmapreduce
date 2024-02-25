@@ -6,8 +6,11 @@ package mr
 // remember to capitalize all names.
 //
 
-import "os"
-import "strconv"
+import (
+	"fmt"
+	"os"
+	"strconv"
+)
 
 //
 // example to show how to declare the arguments
@@ -23,6 +26,24 @@ const (
 	Reduce     MessageType = 3
 	Map        MessageType = 4
 )
+
+func messageTypeString(t MessageType) string {
+	switch t {
+	case Idle:
+	  return "Idle"
+	case InProgress:
+	  return "In Progress"
+	case Completed:
+	  return "Completed"
+	case Reduce:
+	  return "Reduce"
+	case Map:
+	  return "Map"
+	default:
+	  return fmt.Sprintf("Unknown MessageType: %d", t)
+	}
+  }
+  
 
 type ExampleArgs struct {
 	X     int
@@ -49,6 +70,12 @@ type TaskReply struct {
 
 }
 
+func (t TaskReply) String() string {
+    return fmt.Sprintf("Filename: %s, Task Number: %d, Num Reducers: %d, Task Type: %s",
+        t.Filename, t.TaskNumber, t.NumReducers, messageTypeString(t.TaskType))
+}
+
+ 
 type Task struct {
 	Filename  string
 	TaskNum   int

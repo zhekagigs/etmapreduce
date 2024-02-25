@@ -1,6 +1,7 @@
 package mr
 
 import (
+	"bufio"
 	"fmt"
 	"hash/fnv"
 	"io"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"sort"
 	"strconv"
+	"strings"
 )
 
 // Map functions return a slice of KeyValue.
@@ -25,6 +27,30 @@ func (a ByKey) Len() int           { return len(a) }
 func (a ByKey) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
 func (a ByKey) Less(i, j int) bool { return a[i].Key < a[j].Key }
 
+func ScanFile(f *os.File) (map[string]string, error) {
+	var (
+		kmap map[string]string
+		err  error
+	)
+	// Read the entire file into a byte slice
+	b, err := io.ReadAll(f)
+	if err != nil {
+		return kmap, err
+	}
+	// Convert the byte slice to a string
+	str := string(b[:])
+	// Split the string into lines
+	lines := strings.Split(str, "\n")
+	// Iterate over the lines and split them into key-value pairs
+	for _, line := range lines {
+		parts := strings.SplitN(line, ":", 2)
+		key := parts[0]
+		value := parts[1]
+		kmap[key] = value
+	}
+	return kmap, nil
+}
+
 // use ihash(key) % NReduce to choose the reduce
 // task number for each KeyValue emitted by Map.
 func ihash(key string) int {
@@ -34,7 +60,10 @@ func ihash(key string) int {
 }
 
 // main/mrworker.go calls this function.
-// The map phase should divide the intermediate keys into buckets for nReduce reduce tasks, where nReduce is the number of reduce tasks -- the argument that main/mrcoordinator.go passes to MakeCoordinator(). Each mapper should create nReduce intermediate files for consumption by the reduce tasks.
+// The map phase should divide the intermediate keys into buckets for nReduce reduce
+// tasks, where nReduce is the number of reduce tasks -- the argument that 
+// main/mrcoordinator.go passes to MakeCoordinator(). Each mapper should create 
+// nReduce intermediate files for consumption by the reduce tasks.
 // The worker implementation should put the output of the X'th reduce task in the file mr-out-X.
 // A mr-out-X file should contain one line per Reduce function output. The line should be generated with the Go "%v %v" format, called with the key and value.
 // When the job is completely finished, the worker processes should exit. A simple way to implement this is to use the return value from call(): if the worker fails to contact the coordinator, it can assume that the coordinator has exited because the job is done, so the worker can terminate too. Depending on your design, you might also find it helpful to have a "please exit" pseudo-task that the coordinator can give to workers.
@@ -42,27 +71,20 @@ func Worker(mapf func(string, string) []KeyValue, reducef func(string, []string)
 
 	log.Println("Worker:: worker started")
 	replied := CallForMapTask()
-	// Optional json encoding for temp files
-	// enc := json.NewEncoder(intermediate)
-	// for _, kv := range intermediate {
-	//   err := enc.Encode(&kv)
-	//   if err {
-	// 	log.Fatal(err);
-	// 	panic("Can't encode temp file, worker paniced")
-	//   }
-	// }
-	//use os to write temp file
-	intermediate := doMap(mapf, replied)
-	CallMapTaskDone(intermediate)
-	// doReduce(replied, intermediate, reducef)
-
+	if replied.TaskType == Map {
+		tmpFileNames := doMap(mapf, replied)
+		CallMapTaskDone(tmpFileNames, replied.TaskNumber)
+	}
+	if replied.TaskType == Reduce {
+		doReduce(replied, replied.Filename, reducef)
+	}
 }
 
-func CallMapTaskDone(intermediate string) TaskReply {
-	log.Println("Worker::callMap initialized")
-	args := TaskRequest{Completed}
+func CallMapTaskDone(tmpFileNames []string, tasknumber int) TaskReply {
+	log.Println("Worker::callMapTaskDone initialized")
+	args := TaskRequest{Completed, tmpFileNames, tasknumber, Map}
 	reply := TaskReply{}
-	handlerName := "GiveMeAMapTask"
+	handlerName := "TaskDone"
 	ok := call("Coordinator."+handlerName, &args, &reply)
 	if ok {
 		log.Printf("Worker::coordinator replied with %s\n", reply)
@@ -76,31 +98,36 @@ func CallMapTaskDone(intermediate string) TaskReply {
 func doReduce(replied TaskReply, intermediate string, reducef func(string, []string) string) {
 	oname := "mr-out-" + strconv.Itoa(replied.TaskNumber)
 	ofile, _ := os.Create(oname)
-	// produceReducedOutput(intermediate, reducef, ofile)
+	produceReducedOutput(intermediate, reducef, ofile)
 	log.Println("Worker::finished printing out file " + oname)
 	ofile.Close()
 }
 
-func doMap(mapf func(string, string) []KeyValue, replied TaskReply) string {
-
+func doMap(mapf func(string, string) []KeyValue, replied TaskReply) []string {
+	log.Printf("Worker::doMap\n")
 	intermediate := collectIntermediate(mapf, replied.Filename, replied.NumReducers)
-	// sort.Sort(ByKey(intermediate))
+	var interNames []string
+	interName := "map-inter-"
 
-	interName := "map-inter-" + replied.Filename
-
-	
-	for key, kvpairs := range intermediate {
-		interFile, _ := os.Create(interName + strconv.Itoa(key))
-		fmt.Fprintf(interFile, "%v %v\n", kvpairs.Key, kvpairs.Value)
+	for key, interGroupings := range intermediate {
+		sort.Sort(ByKey(interGroupings))
+		tmpIntername := interName + strconv.Itoa(key) + "-" + replied.Filename
+		interFile, _ := os.Create(tmpIntername)
+		for _, kvpair := range interGroupings {
+			fmt.Fprintf(interFile, "%v %v\n", kvpair.Key, kvpair.Value)
+		}
+		log.Println("Worker::created temp file ", interName+strconv.Itoa(key))
+		interFile.Close()
+		interNames = append(interNames, tmpIntername)
 	}
 	log.Println("Worker::finished printing intermeditea file " + interName)
-	interFile.Close()
-	return interName
+	return interNames
 }
 
-func collectIntermediate(mapf func(string, string) []KeyValue, filename string, nReduce int)  map[int][]KeyValue {
-	
-	m := make(map[int][]KeyValue)
+func collectIntermediate(mapf func(string, string) []KeyValue, filename string, nReduce int) map[int][]KeyValue {
+	log.Printf("Worker::doMap\n")
+
+	partitions := make(map[int][]KeyValue)
 
 	file, err := os.Open(filename)
 	if err != nil {
@@ -115,42 +142,78 @@ func collectIntermediate(mapf func(string, string) []KeyValue, filename string, 
 	for _, kv := range keyValuePairs {
 		partitionKey := ihash(kv.Key) % nReduce
 
-		if _, ok := m[partitionKey]; !ok {
-			m[partitionKey] = []KeyValue{kv}
+		if _, ok := partitions[partitionKey]; !ok {
+			partitions[partitionKey] = []KeyValue{kv}
 		} else {
-			m[partitionKey] = append(m[partitionKey], kv)
+			partitions[partitionKey] = append(partitions[partitionKey], kv)
 		}
-		if (len(m)) > nReduce {
-			panic("Worken:: partition failed")
-		} 
+		if (len(partitions)) > nReduce {
+			panic("Worker:: partition unexpected")
+		}
 	}
 
-	return m
+	return partitions
 }
 
-// func produceReducedOutput(intermediateFile string, reducef func(string, []string) string, ofile *os.File) {
-// 	i := 0
-// 	file := os.Open(intermediateFile)
+func produceReducedOutput(intermediateFile string, reducef func(string, []string) string, ofile *os.File) {
+	i := 0
+	f, err := os.Open(intermediateFile)
+	if err != nil {
+		panic("Error reduce task reading inter file")
+	}
+	defer f.Close()
 
-// 	for i < len(intermediate) {
-// 		j := i + 1
-// 		for j < len(intermediate) && intermediate[j].Key == intermediate[i].Key {
-// 			j++
-// 		}
-// 		values := []string{}
-// 		for k := i; k < j; k++ {
-// 			values = append(values, intermediate[k].Value)
-// 		}
-// 		output := reducef(intermediate[i].Key, values)
+	// // Create a scanner to scan the file
+	// scanner := Scanner{
+	// 	F:        f,
+	// 	Buffer:   make([]byte, 1024),
+	// 	Capacity: 1024,
+	// }
 
-// 		fmt.Fprintf(ofile, "%v %v\n", intermediate[i].Key, output)
+	scanner := bufio.NewScanner(f)
 
-// 		i = j
-// 	}
-// }
+	var kvCollector []KeyValue
+
+	// Iterate over each line in the file
+	for scanner.Scan() {
+		line := scanner.Text()
+		// Check for errors while scanning
+		if err := scanner.Err(); err != nil {
+			fmt.Println("Error reading file:", err)
+		}
+		// Trim the newline character from the end of the line
+		line = strings.TrimRight(line, "\r\n")
+		// Parse the line into a KeyValue struct
+		var kv KeyValue
+
+		_, err = fmt.Sscanf(line, "%s %s", &kv.Key, &kv.Value)
+		if err != nil {
+			fmt.Println(err)
+			continue
+		}
+		kvCollector = append(kvCollector, kv)
+		// Do something with the KeyValue struct
+	}
+
+	for i < len(kvCollector) {
+		j := i + 1
+		for j < len(kvCollector) && kvCollector[j].Key == kvCollector[i].Key {
+			j++
+		}
+		values := []string{}
+		for k := i; k < j; k++ {
+			values = append(values, kvCollector[k].Value)
+		}
+		output := reducef(kvCollector[i].Key, values)
+
+		fmt.Fprintf(ofile, "%v %v\n", kvCollector[i].Key, output)
+
+		i = j
+	}
+}
 
 func CallForMapTask() TaskReply {
-	log.Println("Worker::callMap initialized")
+	log.Println("Worker::CallForMapTask")
 	args := TaskRequest{}
 	reply := TaskReply{}
 	handlerName := "GiveMeAMapTask"
@@ -160,7 +223,6 @@ func CallForMapTask() TaskReply {
 	} else {
 		fmt.Println("MyCall failed!")
 	}
-
 	return reply
 }
 

@@ -33,7 +33,6 @@ type Coordinator struct {
 func (c *Coordinator) GiveMeAMapTask(request *TaskRequest, reply *TaskReply) error {
 	log.Println("Coordinator::Map requested")
 
-
 	for _, task := range c.Tasks {
 		if !task.isMapped {
 			reply.Filename = task.Filename
@@ -125,7 +124,7 @@ func (c *Coordinator) Done() bool {
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	var tasks []Task
 	for i, filename := range files {
-		tasks = append(tasks, Task{filename, i, false, false, Idle})
+		tasks = append(tasks, Task{filename, i, false, false, Map})
 	}
 	c := Coordinator{
 		Tasks:          tasks,
